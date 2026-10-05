@@ -1,0 +1,33 @@
+---
+- name: Configurar switches de acceso NexLog
+  hosts: access
+  gather_facts: false
+
+  tasks:
+
+    - name: Configurar ACC-01
+      ansible.builtin.shell: |
+        set -e
+
+        ovs-vsctl set Port eth1 vlan_mode=access tag=10
+        ovs-vsctl set Port eth2 vlan_mode=access tag=30
+        ovs-vsctl set Port eth3 vlan_mode=access tag=30
+        ovs-vsctl set Port eth15 vlan_mode=trunk trunks=10,20,30
+      when: inventory_hostname == "ACC-01"
+
+    - name: Configurar ACC-02
+      ansible.builtin.shell: |
+        set -e
+
+        ovs-vsctl set Port eth1 vlan_mode=access tag=20
+        ovs-vsctl set Port eth2 vlan_mode=access tag=20
+        ovs-vsctl set Port eth15 vlan_mode=trunk trunks=10,20,30
+      when: inventory_hostname == "ACC-02"
+
+    - name: Obtener configuración OVS
+      ansible.builtin.command: ovs-vsctl show
+      register: ovs_config
+
+    - name: Mostrar configuración OVS
+      ansible.builtin.debug:
+        var: ovs_config.stdout_lines

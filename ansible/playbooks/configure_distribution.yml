@@ -1,0 +1,102 @@
+---
+- name: Configurar collapsed core NexLog
+  hosts: distribution
+  gather_facts: false
+
+  tasks:
+
+    - name: Configurar trunks hacia switches de acceso
+      ansible.builtin.shell: |
+        set -e
+        ovs-vsctl set Port eth14 vlan_mode=trunk trunks=10,20,30
+        ovs-vsctl set Port eth15 vlan_mode=trunk trunks=10,20,30
+
+    - name: Crear interfaces internas de VLAN
+      ansible.builtin.shell: |
+        set -e
+
+        ovs-vsctl --may-exist add-port br0 vlan10 -- set Interface vlan10 type=internal
+        ovs-vsctl set Port vlan10 tag=10
+
+        ovs-vsctl --may-exist add-port br0 vlan20 -- set Interface vlan20 type=internal
+        ovs-vsctl set Port vlan20 tag=20
+
+        ovs-vsctl --may-exist add-port br0 vlan30 -- set Interface vlan30 type=internal
+        ovs-vsctl set Port vlan30 tag=30
+
+    - name: Configurar gateways de VLAN
+      ansible.builtin.shell: |
+        set -e
+
+        ip link set vlan10 up
+        ip link set vlan20 up
+        ip link set vlan30 up
+
+        ip addr show dev vlan10 | grep -q '10.10.10.1/24' || {
+          ip addr flush dev vlan10
+          ip addr add 10.10.10.1/24 dev vlan10
+        }
+
+        ip addr show dev vlan20 | grep -q '10.10.20.1/24' || {
+          ip addr flush dev vlan20
+          ip addr add 10.10.20.1/24 dev vlan20
+        }
+
+        ip addr show dev vlan30 | grep -q '10.10.30.1/24' || {
+          ip addr flush dev vlan30
+          ip addr add 10.10.30.1/24 dev vlan30
+        }
+
+    - name: Habilitar routing IPv4
+      ansible.builtin.shell: |
+        echo 1 > /proc/sys/net/ipv4/ip_forward
+
+    - name: Configurar enlace de transito hacia FortiGate
+      ansible.builtin.shell: |
+        set -e
+
+        ovs-vsctl --if-exists del-port br0 eth13
+
+        ip link set eth13 up
+
+        ip addr show dev eth13 | grep -q '10.255.255.2/30' || {
+          ip addr flush dev eth13
+          ip addr add 10.255.255.2/30 dev eth13
+        }
+
+        ip route replace default via 10.255.255.1 dev eth13
+
+    - name: Configurar segmentacion OpenFlow
+      ansible.builtin.shell: |
+        ovs-ofctl --strict del-flows br0 "priority=0" || true
+
+        ovs-ofctl --strict del-flows br0 \
+          "priority=200,ip,nw_src=10.10.10.0/24,nw_dst=10.10.20.0/24" || true
+
+        ovs-ofctl --strict del-flows br0 \
+          "priority=200,ip,nw_src=10.10.20.0/24,nw_dst=10.10.10.0/24" || true
+
+        ovs-ofctl add-flow br0 \
+          "priority=0,actions=NORMAL"
+
+        ovs-ofctl add-flow br0 \
+          "priority=200,ip,nw_src=10.10.10.0/24,nw_dst=10.10.20.0/24,actions=drop"
+
+        ovs-ofctl add-flow br0 \
+          "priority=200,ip,nw_src=10.10.20.0/24,nw_dst=10.10.10.0/24,actions=drop"
+
+    - name: Mostrar tabla de rutas
+      ansible.builtin.command: ip route
+      register: routing_table
+
+    - name: Mostrar rutas finales
+      ansible.builtin.debug:
+        var: routing_table.stdout_lines
+
+    - name: Mostrar reglas OpenFlow
+      ansible.builtin.command: ovs-ofctl dump-flows br0
+      register: openflow_rules
+
+    - name: Mostrar reglas de segmentacion
+      ansible.builtin.debug:
+        var: openflow_rules.stdout_lines

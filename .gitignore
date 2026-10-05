@@ -1,0 +1,11 @@
+*.retry
+*.log
+*.tmp
+*.swp
+*.pem
+*.key
+.vault_pass
+terraform.tfstate
+terraform.tfstate.*
+.terraform/
+*.tfvars
