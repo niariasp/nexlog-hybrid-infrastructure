@@ -9,3 +9,13 @@ terraform.tfstate
 terraform.tfstate.*
 .terraform/
 *.tfvars
+
+# Terraform
+**/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+*.tfvars.json
+*.tfplan
+crash.log
+crash.*.log
