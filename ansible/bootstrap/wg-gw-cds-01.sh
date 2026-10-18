@@ -29,5 +29,6 @@ wg set wg0 \
 # Activar tunel y ruta hacia WMS
 ip link set wg0 up
 ip route replace 10.10.30.0/24 dev wg0
+ip route replace prohibit 10.10.0.0/16
 
 echo "[NEXLOG] WireGuard GW-CDS-01 restaurado"
