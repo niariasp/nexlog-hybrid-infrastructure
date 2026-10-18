@@ -1,0 +1,6 @@
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/bin
+
+# Respaldo demostrativo WMS -> Azure Blob Storage
+# Ejecucion diaria a las 18:00, hora local del servidor
+0 18 * * * root /usr/local/sbin/nexlog-wms-backup.sh >> /var/log/nexlog-wms-backup.log 2>&1
