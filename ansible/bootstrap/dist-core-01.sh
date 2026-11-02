@@ -41,4 +41,13 @@ if ! pidof sshd >/dev/null 2>&1; then
     /usr/sbin/sshd
 fi
 
+# 6. Politica de firewall deny-by-default (nftables).
+#    Se carga ANTES de que Ansible restaure gateways y OpenFlow: evita ventana fail-open.
+echo "[NEXLOG] Cargando politica nftables..."
+if ! command -v nft >/dev/null 2>&1; then
+    apk add --no-cache nftables
+fi
+nft -f /etc/network/nftables-nexlog.nft
+echo "[NEXLOG] nftables activo: $(nft list ruleset | grep -c 'policy drop') cadenas con policy drop"
+
 echo "[NEXLOG] Bootstrap completado correctamente"
