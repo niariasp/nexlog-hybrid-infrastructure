@@ -30,5 +30,7 @@ wg set wg0 \
 ip link set wg0 up
 ip route replace 10.10.30.0/24 dev wg0
 ip route replace prohibit 10.10.0.0/16
+ip route replace prohibit 192.168.99.0/24
+ip route replace prohibit 10.255.255.0/30
 
 echo "[NEXLOG] WireGuard GW-CDS-01 restaurado"

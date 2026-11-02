@@ -1,102 +1,161 @@
 ---
+# NexLog Chile - DIST-CORE-01 (collapsed core)
+# Playbook idempotente: cada tarea comprueba el estado actual y solo modifica
+# lo que difiere del estado deseado. Las tareas que cambian algo imprimen
+# "CHANGED ..." y Ansible usa esa marca en changed_when.
 - name: Configurar collapsed core NexLog
   hosts: distribution
   gather_facts: false
+
+  vars:
+    trunk_ports: [eth14, eth15]
+    trunk_vlans: "10,20,30"
+    vlan_ids: [10, 20, 30]
+    transit_if: eth13
+    transit_ip: 10.255.255.2/30
+    transit_gw: 10.255.255.1
 
   tasks:
 
     - name: Configurar trunks hacia switches de acceso
       ansible.builtin.shell: |
         set -e
-        ovs-vsctl set Port eth14 vlan_mode=trunk trunks=10,20,30
-        ovs-vsctl set Port eth15 vlan_mode=trunk trunks=10,20,30
+        for p in {{ trunk_ports | join(' ') }}; do
+          if [ "$(ovs-vsctl get port $p vlan_mode)" != "trunk" ] || \
+             [ "$(ovs-vsctl get port $p trunks)" != "[{{ trunk_vlans | replace(',', ', ') }}]" ]; then
+            ovs-vsctl set Port $p vlan_mode=trunk trunks={{ trunk_vlans }}
+            echo "CHANGED trunk $p"
+          fi
+        done
+      register: r_trunks
+      changed_when: "'CHANGED' in r_trunks.stdout"
 
     - name: Crear interfaces internas de VLAN
       ansible.builtin.shell: |
         set -e
-
-        ovs-vsctl --may-exist add-port br0 vlan10 -- set Interface vlan10 type=internal
-        ovs-vsctl set Port vlan10 tag=10
-
-        ovs-vsctl --may-exist add-port br0 vlan20 -- set Interface vlan20 type=internal
-        ovs-vsctl set Port vlan20 tag=20
-
-        ovs-vsctl --may-exist add-port br0 vlan30 -- set Interface vlan30 type=internal
-        ovs-vsctl set Port vlan30 tag=30
+        for v in {{ vlan_ids | join(' ') }}; do
+          if ! ovs-vsctl list-ports br0 | grep -qx "vlan$v"; then
+            ovs-vsctl add-port br0 vlan$v -- set Interface vlan$v type=internal
+            echo "CHANGED add-port vlan$v"
+          fi
+          if [ "$(ovs-vsctl get port vlan$v tag)" != "$v" ]; then
+            ovs-vsctl set Port vlan$v tag=$v
+            echo "CHANGED tag vlan$v"
+          fi
+        done
+      register: r_vlanif
+      changed_when: "'CHANGED' in r_vlanif.stdout"
 
     - name: Configurar gateways de VLAN
       ansible.builtin.shell: |
         set -e
-
-        ip link set vlan10 up
-        ip link set vlan20 up
-        ip link set vlan30 up
-
-        ip addr show dev vlan10 | grep -q '10.10.10.1/24' || {
-          ip addr flush dev vlan10
-          ip addr add 10.10.10.1/24 dev vlan10
-        }
-
-        ip addr show dev vlan20 | grep -q '10.10.20.1/24' || {
-          ip addr flush dev vlan20
-          ip addr add 10.10.20.1/24 dev vlan20
-        }
-
-        ip addr show dev vlan30 | grep -q '10.10.30.1/24' || {
-          ip addr flush dev vlan30
-          ip addr add 10.10.30.1/24 dev vlan30
-        }
+        for v in {{ vlan_ids | join(' ') }}; do
+          if ! ip -o link show vlan$v | grep -qE '[<,]UP[,>]'; then
+            ip link set vlan$v up
+            echo "CHANGED link-up vlan$v"
+          fi
+          if ! ip -4 addr show dev vlan$v | grep -q "10.10.$v.1/24"; then
+            ip -4 addr flush dev vlan$v
+            ip addr add 10.10.$v.1/24 dev vlan$v
+            echo "CHANGED gateway vlan$v"
+          fi
+        done
+      register: r_gw
+      changed_when: "'CHANGED' in r_gw.stdout"
 
     - name: Habilitar routing IPv4
       ansible.builtin.shell: |
-        echo 1 > /proc/sys/net/ipv4/ip_forward
+        if [ "$(cat /proc/sys/net/ipv4/ip_forward)" != "1" ]; then
+          echo 1 > /proc/sys/net/ipv4/ip_forward
+          echo "CHANGED ip_forward"
+        fi
+      register: r_fwd
+      changed_when: "'CHANGED' in r_fwd.stdout"
 
     - name: Configurar enlace de transito hacia FortiGate
       ansible.builtin.shell: |
         set -e
+        if ovs-vsctl list-ports br0 | grep -qx "{{ transit_if }}"; then
+          ovs-vsctl del-port br0 {{ transit_if }}
+          echo "CHANGED del-port {{ transit_if }}"
+        fi
+        if ! ip -o link show {{ transit_if }} | grep -qE '[<,]UP[,>]'; then
+          ip link set {{ transit_if }} up
+          echo "CHANGED link-up {{ transit_if }}"
+        fi
+        if ! ip -4 addr show dev {{ transit_if }} | grep -q "{{ transit_ip }}"; then
+          ip -4 addr flush dev {{ transit_if }}
+          ip addr add {{ transit_ip }} dev {{ transit_if }}
+          echo "CHANGED ip {{ transit_if }}"
+        fi
+        if ! ip route show default | grep -q "via {{ transit_gw }} dev {{ transit_if }}"; then
+          ip route replace default via {{ transit_gw }} dev {{ transit_if }}
+          echo "CHANGED default-route"
+        fi
+      register: r_transit
+      changed_when: "'CHANGED' in r_transit.stdout"
 
-        ovs-vsctl --if-exists del-port br0 eth13
-
-        ip link set eth13 up
-
-        ip addr show dev eth13 | grep -q '10.255.255.2/30' || {
-          ip addr flush dev eth13
-          ip addr add 10.255.255.2/30 dev eth13
-        }
-
-        ip route replace default via 10.255.255.1 dev eth13
-
-    - name: Configurar segmentacion OpenFlow
+    # Antes: del-flows + add-flows en cada ejecucion (ventana permisiva y
+    # changed siempre). Ahora: solo agrega la regla que falta; nunca borra.
+    - name: Configurar segmentacion OpenFlow (ADMIN <-> OPER)
       ansible.builtin.shell: |
-        ovs-ofctl --strict del-flows br0 "priority=0" || true
+        set -e
+        FLOWS="$(ovs-ofctl dump-flows br0)"
+        add_if_missing() {
+          if ! echo "$FLOWS" | grep -qF "$1 actions=$2"; then
+            ovs-ofctl add-flow br0 "$1,actions=$2"
+            echo "CHANGED add-flow $1"
+          fi
+        }
+        add_if_missing "priority=200,ip,nw_src=10.10.10.0/24,nw_dst=10.10.20.0/24" "drop"
+        add_if_missing "priority=200,ip,nw_src=10.10.20.0/24,nw_dst=10.10.10.0/24" "drop"
+        add_if_missing "priority=0" "NORMAL"
+      register: r_of
+      changed_when: "'CHANGED' in r_of.stdout"
 
-        ovs-ofctl --strict del-flows br0 \
-          "priority=200,ip,nw_src=10.10.10.0/24,nw_dst=10.10.20.0/24" || true
+    # Hardening: la imagen gns3/openvswitch agrega eth1..eth15 a br0. Un puerto
+    # OVS sin tag ni trunks transporta TODAS las VLAN. Se retiran los puertos
+    # sin uso; salvaguarda: aborta si un puerto a retirar registra trafico.
+    - name: Retirar de br0 los puertos sin uso
+      ansible.builtin.shell: |
+        set -e
+        USED=" {{ trunk_ports | join(' ') }} "
+        CAND=""
+        for p in $(ovs-vsctl list-ports br0); do
+          case "$p" in eth*) ;; *) continue ;; esac
+          case "$USED" in *" $p "*) continue ;; esac
+          CAND="$CAND $p"
+        done
+        # 1a pasada: verificar todos antes de tocar nada
+        for p in $CAND; do
+          rx=$(cat /sys/class/net/$p/statistics/rx_packets 2>/dev/null || echo 0)
+          if [ "$rx" -gt 0 ]; then
+            echo "ABORT: $p registra trafico (rx_packets=$rx); revisar cableado. No se retiro ningun puerto."
+            exit 1
+          fi
+        done
+        # 2a pasada: retirar
+        for p in $CAND; do
+          ovs-vsctl del-port br0 $p
+          echo "CHANGED del-port $p"
+        done
+      register: r_unused
+      changed_when: "'CHANGED' in r_unused.stdout"
 
-        ovs-ofctl --strict del-flows br0 \
-          "priority=200,ip,nw_src=10.10.20.0/24,nw_dst=10.10.10.0/24" || true
+    - name: Verificar politica nftables cargada (deny-by-default)
+      ansible.builtin.shell: nft list ruleset | grep -c 'policy drop' || true
+      register: r_nft
+      changed_when: false
+      failed_when: (r_nft.stdout | int) < 2
 
-        ovs-ofctl add-flow br0 \
-          "priority=0,actions=NORMAL"
+    - name: Obtener estado final (rutas, puertos y reglas OpenFlow)
+      ansible.builtin.shell: |
+        echo "== Rutas =="; ip route
+        echo "== Puertos br0 =="; ovs-vsctl list-ports br0 | tr '\n' ' '; echo
+        echo "== OpenFlow =="; ovs-ofctl dump-flows br0 | sed 's/.*priority/priority/'
+      register: r_estado
+      changed_when: false
 
-        ovs-ofctl add-flow br0 \
-          "priority=200,ip,nw_src=10.10.10.0/24,nw_dst=10.10.20.0/24,actions=drop"
-
-        ovs-ofctl add-flow br0 \
-          "priority=200,ip,nw_src=10.10.20.0/24,nw_dst=10.10.10.0/24,actions=drop"
-
-    - name: Mostrar tabla de rutas
-      ansible.builtin.command: ip route
-      register: routing_table
-
-    - name: Mostrar rutas finales
+    - name: Mostrar estado final
       ansible.builtin.debug:
-        var: routing_table.stdout_lines
-
-    - name: Mostrar reglas OpenFlow
-      ansible.builtin.command: ovs-ofctl dump-flows br0
-      register: openflow_rules
-
-    - name: Mostrar reglas de segmentacion
-      ansible.builtin.debug:
-        var: openflow_rules.stdout_lines
+        var: r_estado.stdout_lines

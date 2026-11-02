@@ -1,33 +1,74 @@
 ---
+# NexLog Chile - switches de acceso ACC-01 / ACC-02
+# Playbook idempotente: solo modifica lo que difiere del estado deseado.
 - name: Configurar switches de acceso NexLog
   hosts: access
   gather_facts: false
 
+  vars:
+    uplink_port: eth15
+    trunk_vlans: "10,20,30"
+    access_ports:
+      ACC-01: { eth1: 10, eth2: 30, eth3: 30 }
+      ACC-02: { eth1: 20, eth2: 20 }
+
   tasks:
 
-    - name: Configurar ACC-01
+    - name: Configurar puertos access
       ansible.builtin.shell: |
         set -e
+        {% for port, vlan in access_ports[inventory_hostname].items() %}
+        if [ "$(ovs-vsctl get port {{ port }} vlan_mode)" != "access" ] || \
+           [ "$(ovs-vsctl get port {{ port }} tag)" != "{{ vlan }}" ]; then
+          ovs-vsctl set Port {{ port }} vlan_mode=access tag={{ vlan }}
+          echo "CHANGED access {{ port }} vlan {{ vlan }}"
+        fi
+        {% endfor %}
+      register: r_access
+      changed_when: "'CHANGED' in r_access.stdout"
 
-        ovs-vsctl set Port eth1 vlan_mode=access tag=10
-        ovs-vsctl set Port eth2 vlan_mode=access tag=30
-        ovs-vsctl set Port eth3 vlan_mode=access tag=30
-        ovs-vsctl set Port eth15 vlan_mode=trunk trunks=10,20,30
-      when: inventory_hostname == "ACC-01"
-
-    - name: Configurar ACC-02
+    - name: Configurar uplink trunk hacia DIST-CORE-01
       ansible.builtin.shell: |
         set -e
+        if [ "$(ovs-vsctl get port {{ uplink_port }} vlan_mode)" != "trunk" ] || \
+           [ "$(ovs-vsctl get port {{ uplink_port }} trunks)" != "[{{ trunk_vlans | replace(',', ', ') }}]" ]; then
+          ovs-vsctl set Port {{ uplink_port }} vlan_mode=trunk trunks={{ trunk_vlans }}
+          echo "CHANGED trunk {{ uplink_port }}"
+        fi
+      register: r_uplink
+      changed_when: "'CHANGED' in r_uplink.stdout"
 
-        ovs-vsctl set Port eth1 vlan_mode=access tag=20
-        ovs-vsctl set Port eth2 vlan_mode=access tag=20
-        ovs-vsctl set Port eth15 vlan_mode=trunk trunks=10,20,30
-      when: inventory_hostname == "ACC-02"
+    - name: Retirar de br0 los puertos sin uso
+      ansible.builtin.shell: |
+        set -e
+        USED=" {{ (access_ports[inventory_hostname].keys() | list + [uplink_port]) | join(' ') }} "
+        CAND=""
+        for p in $(ovs-vsctl list-ports br0); do
+          case "$p" in eth*) ;; *) continue ;; esac
+          case "$USED" in *" $p "*) continue ;; esac
+          CAND="$CAND $p"
+        done
+        # 1a pasada: verificar todos antes de tocar nada
+        for p in $CAND; do
+          rx=$(cat /sys/class/net/$p/statistics/rx_packets 2>/dev/null || echo 0)
+          if [ "$rx" -gt 0 ]; then
+            echo "ABORT: $p registra trafico (rx_packets=$rx); revisar cableado. No se retiro ningun puerto."
+            exit 1
+          fi
+        done
+        # 2a pasada: retirar
+        for p in $CAND; do
+          ovs-vsctl del-port br0 $p
+          echo "CHANGED del-port $p"
+        done
+      register: r_unused
+      changed_when: "'CHANGED' in r_unused.stdout"
 
-    - name: Obtener configuración OVS
+    - name: Obtener configuracion OVS
       ansible.builtin.command: ovs-vsctl show
       register: ovs_config
+      changed_when: false
 
-    - name: Mostrar configuración OVS
+    - name: Mostrar configuracion OVS
       ansible.builtin.debug:
         var: ovs_config.stdout_lines
