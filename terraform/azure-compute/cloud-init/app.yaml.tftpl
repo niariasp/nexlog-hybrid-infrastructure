@@ -1,0 +1,55 @@
+#cloud-config
+# APP-AZ-01 — réplica de lectura del inventario WMS (contingencia del CD Secundario).
+# Sin IP pública. Los paquetes se instalan a través del NVA (UDR 0.0.0.0/0).
+
+write_files:
+  - path: /var/www/html/index.html
+    permissions: '0644'
+    content: |
+      <!doctype html><html lang="es"><meta charset="utf-8"><title>NexLog APP-AZ-01</title>
+      <h1>NexLog Chile - APP-AZ-01</h1>
+      <p>Replica de contingencia en Azure. Aun no sincronizada.</p></html>
+
+  - path: /usr/local/sbin/nexlog-replica.sh
+    permissions: '0755'
+    content: |
+      #!/bin/bash
+      # Descarga el respaldo de inventario mas reciente desde Blob usando la
+      # identidad administrada de la VM (sin claves ni secretos) y lo publica.
+      set -euo pipefail
+      [ "${enable_replica}" = "true" ] || exit 0
+      SA="${storage_account}"; C="${container}"; V="2021-08-06"
+      OUT=/var/lib/nexlog; mkdir -p "$OUT"
+      TOKEN=$(curl -sf -H Metadata:true "http://169.254.169.254/metadata/identity/oauth2/token?api-version=2018-02-01&resource=https://storage.azure.com/" \
+        | python3 -c 'import sys,json; print(json.load(sys.stdin)["access_token"])')
+      LIST=$(curl -sf -H "Authorization: Bearer $TOKEN" -H "x-ms-version: $V" \
+        "https://$SA.blob.core.windows.net/$C?restype=container&comp=list&prefix=wms/automaticos/")
+      LAST=$(echo "$LIST" | grep -o '<Name>[^<]*</Name>' | sed 's/<[^>]*>//g' | sort | tail -n 1)
+      [ -n "$LAST" ] || { echo "$(date -Is) sin respaldos en el contenedor"; exit 1; }
+      curl -sf -H "Authorization: Bearer $TOKEN" -H "x-ms-version: $V" \
+        -o "$OUT/inventario.csv" "https://$SA.blob.core.windows.net/$C/$LAST"
+      SHA=$(sha256sum "$OUT/inventario.csv" | cut -d' ' -f1)
+      {
+        echo '<!doctype html><html lang="es"><meta charset="utf-8"><title>NexLog APP-AZ-01</title>'
+        echo "<h1>NexLog Chile - Replica de inventario (Azure)</h1>"
+        echo "<p>Host: $(hostname) | Sincronizado: $(date -Is)</p>"
+        echo "<p>Origen: $LAST</p><p>SHA-256: $SHA</p><table border=1>"
+        awk -F, '{printf "<tr>"; for(i=1;i<=NF;i++) printf "<td>%s</td>", $i; print "</tr>"}' "$OUT/inventario.csv"
+        echo "</table></html>"
+      } > /var/www/html/index.html.tmp
+      mv /var/www/html/index.html.tmp /var/www/html/index.html
+      echo "$(date -Is) OK $LAST $SHA"
+
+  - path: /etc/cron.d/nexlog-replica
+    permissions: '0644'
+    content: |
+      */15 * * * * root /usr/local/sbin/nexlog-replica.sh >> /var/log/nexlog-replica.log 2>&1
+
+runcmd:
+  - [ sh, -c, 'until curl -s --max-time 5 -o /dev/null http://azure.archive.ubuntu.com/ubuntu/; do sleep 10; done' ]
+  - apt-get update
+  - DEBIAN_FRONTEND=noninteractive apt-get install -y nginx
+  - cp /var/www/html/index.html /var/www/html/index.html.bak || true
+  - [ sh, -c, '/usr/local/sbin/nexlog-replica.sh >> /var/log/nexlog-replica.log 2>&1 || true' ]
+
+final_message: "NEXLOG APP-AZ-01 listo tras $UPTIME s"

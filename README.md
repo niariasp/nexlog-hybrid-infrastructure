@@ -71,7 +71,11 @@ scripts/wms/
   azcopy-spn.env.example         # plantilla SIN valores reales
 terraform/
   azure/                         # Storage, contenedor privado, RBAC (estado propio)
-  azure-network/                 # VNet, subredes y NSG deny-by-default (estado separado)
+  azure-network/                 # VNet, subredes (apps, mgmt, edge), NSG deny-by-default y UDR hacia el NVA
+  azure-compute/                 # Extensión funcional: NVA (WireGuard + nftables + NAT) y réplica de inventario
+                                 # con Managed Identity (estado propio; ver "Estado de la extensión Cloud")
+docs/
+  RECUPERACION.txt               # Procedimiento operativo de recuperación paso a paso
 ```
 
 ## Recuperación tras reinicio
@@ -102,6 +106,12 @@ terraform apply tfplan
 - La suscripción se toma de `ARM_SUBSCRIPTION_ID`; el provider usa `resource_provider_registrations = "none"`.
 - `terraform/azure` y `terraform/azure-network` tienen **estados separados**.
 - Los NSG terminan en una regla `Deny-All-Inbound` (prioridad 4000), por encima de las reglas por defecto de Azure.
+
+### Estado de la extensión Cloud (noviembre 2026)
+
+- **Desplegado:** VNet `10.100.0.0/16` con `snet-apps`, `snet-mgmt` y `snet-edge`; NSG deny-by-default por subred; tabla de rutas que envía el tráfico de `snet-apps` al gateway virtual (10.100.1.4).
+- **Diseñado y validado, no desplegado:** `terraform/azure-compute` (GW-AZ-01 y APP-AZ-01). La política de la suscripción permite crear VM e IP pública, pero Azure respondió `SkuNotAvailable` por falta de capacidad para `Standard_B2ats_v2` y `Standard_B1s` en Brazil South (zonas 1, 2 y 3) el 2026-11-03. El módulo queda listo para ejecutarse en otra región o cuando exista capacidad.
+- Las variables con datos del laboratorio (IP pública, claves públicas) se entregan por entorno (`TF_VAR_*`), no en archivos.
 
 ## Manejo de secretos
 

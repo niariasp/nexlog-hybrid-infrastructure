@@ -1,0 +1,83 @@
+#cloud-config
+# GW-AZ-01 — gateway virtual (NVA) de la extensión Cloud del CD Secundario.
+package_update: true
+packages:
+  - wireguard-tools
+  - nftables
+
+write_files:
+  - path: /etc/sysctl.d/99-nexlog-forward.conf
+    permissions: '0644'
+    content: |
+      net.ipv4.ip_forward = 1
+
+  - path: /etc/nftables.conf
+    permissions: '0644'
+    content: |
+      #!/usr/sbin/nft -f
+      # NexLog Chile - GW-AZ-01 - politica deny-by-default (misma logica que DIST-CORE-01)
+      flush ruleset
+
+      table inet nexlog {
+          chain input {
+              type filter hook input priority filter; policy drop;
+              ct state established,related accept
+              ct state invalid drop
+              iifname "lo" accept
+              iifname "eth0" udp dport 51820 counter accept comment "Tunel WireGuard"
+              iifname "eth0" udp sport 67 udp dport 68 accept comment "DHCP de la plataforma Azure"
+              ip saddr 168.63.129.16 accept comment "Plataforma Azure"
+              iifname "wg1" ip saddr 172.27.1.2 tcp dport 22 counter accept comment "SSH solo desde GW-CDS-01 por el tunel"
+              iifname "wg1" icmp type echo-request accept comment "Ping de diagnostico por el tunel"
+              counter drop
+          }
+
+          chain forward {
+              type filter hook forward priority filter; policy drop;
+              ct state established,related accept
+              ct state invalid drop
+              iifname "wg1" ip saddr ${cds_lan_prefix} ip daddr ${subnet_apps_prefix} tcp dport { 80, 443 } counter accept comment "CD Secundario a APP web"
+              iifname "wg1" ip saddr ${cds_lan_prefix} ip daddr ${subnet_apps_prefix} icmp type echo-request counter accept comment "Ping hacia APP (el NSG decide)"
+              iifname "eth0" ip saddr ${subnet_apps_prefix} oifname "eth0" counter accept comment "Salida de APP a Internet con NAT"
+              counter drop
+          }
+      }
+
+      table ip nexlog_nat {
+          chain postrouting {
+              type nat hook postrouting priority srcnat; policy accept;
+              oifname "eth0" ip saddr ${subnet_apps_prefix} ip daddr != 10.0.0.0/8 masquerade
+          }
+      }
+
+  - path: /usr/local/sbin/nexlog-wg-init.sh
+    permissions: '0700'
+    content: |
+      #!/bin/sh
+      # La clave privada se genera aqui y nunca sale de la VM.
+      set -eu
+      umask 077
+      mkdir -p /etc/wireguard
+      [ -s /etc/wireguard/private.key ] || wg genkey > /etc/wireguard/private.key
+      wg pubkey < /etc/wireguard/private.key > /etc/wireguard/public.key
+      cat > /etc/wireguard/wg1.conf <<EOC
+      [Interface]
+      Address = 172.27.1.1/30
+      ListenPort = 51820
+      PostUp = wg set %i private-key /etc/wireguard/private.key
+
+      [Peer]
+      # GW-CDS-01 (CD Secundario). Inicia el tunel desde detras de NAT.
+      PublicKey = ${cds_wg_public_key}
+      AllowedIPs = 172.27.1.2/32, ${cds_lan_prefix}
+      EOC
+
+runcmd:
+  - sysctl --system
+  - /usr/local/sbin/nexlog-wg-init.sh
+  - systemctl enable --now wg-quick@wg1
+  - systemctl enable nftables
+  - systemctl restart nftables
+  - [ sh, -c, 'echo "NEXLOG_WG_PUBKEY=$(cat /etc/wireguard/public.key)" > /dev/ttyS0' ]
+
+final_message: "NEXLOG GW-AZ-01 listo tras $UPTIME s"

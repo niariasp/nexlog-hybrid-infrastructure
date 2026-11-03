@@ -10,6 +10,7 @@ output "subnets" {
   value = {
     apps = azurerm_subnet.apps.address_prefixes[0]
     mgmt = azurerm_subnet.mgmt.address_prefixes[0]
+    edge = azurerm_subnet.edge.address_prefixes[0]
   }
 }
 
@@ -17,5 +18,10 @@ output "nsgs" {
   value = {
     apps = azurerm_network_security_group.apps.name
     mgmt = azurerm_network_security_group.mgmt.name
+    edge = azurerm_network_security_group.edge.name
   }
+}
+
+output "route_table" {
+  value = azurerm_route_table.apps.name
 }

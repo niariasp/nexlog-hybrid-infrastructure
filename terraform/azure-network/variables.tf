@@ -33,3 +33,22 @@ variable "cds_lan_prefix" {
   type        = string
   default     = "10.20.20.0/24"
 }
+
+# --- Extensión funcional (Fase A, 2026-11) ---
+
+variable "subnet_edge_prefix" {
+  description = "Subred de borde: aloja el gateway virtual (NVA) con IP pública, equivalente al perímetro del CD Principal."
+  type        = string
+  default     = "10.100.1.0/24"
+}
+
+variable "nva_private_ip" {
+  description = "IP privada fija del gateway virtual GW-AZ-01 (siguiente salto de la tabla de rutas de snet-apps)."
+  type        = string
+  default     = "10.100.1.4"
+}
+
+variable "wg_allowed_source" {
+  description = "Origen autorizado para WireGuard (UDP 51820). Usar la IP pública actual del laboratorio en formato x.x.x.x/32."
+  type        = string
+}

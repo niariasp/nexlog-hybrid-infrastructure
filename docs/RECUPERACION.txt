@@ -1,0 +1,129 @@
+==========================================================================
+ NEXLOG CHILE - RECUPERACION DEL LABORATORIO (paso a paso)
+ Actualizado: 2026-11-03 (arranque en frio validado)
+ Uso: copiar y pegar cada bloque en la consola indicada, EN ESTE ORDEN.
+==========================================================================
+
+ORDEN Y POR QUE
+ 1) DIST-CORE-01 bootstrap  -> carga nftables ANTES que el ruteo (sin fail-open)
+ 2) ACC-01 y ACC-02 bootstrap -> SSH para que Ansible pueda entrar
+ 3) WireGuard (DIST y GW-CDS-01) -> tunel Site 1 <-> Site 2
+ 4) (Opcional) wg1 en GW-CDS-01 -> tunel Site 2 <-> Azure
+ 5) Ansible (controlador) -> gateways, trunks, OpenFlow, limpieza de puertos
+ 6) Verificacion rapida
+
+Antes de empezar:
+ - GNS3: abrir el proyecto y "Start all nodes" (boton verde). Anotar la hora.
+ - VMware: encender la VM SRV-WMS-01 (AlmaLinux). httpd arranca solo.
+ - FortiGate y PCs VPCS: no necesitan nada (guardan su configuracion).
+
+
+--------------------------------------------------------------------------
+ 1) DIST-CORE-01  (consola GNS3)
+--------------------------------------------------------------------------
+/etc/network/nexlog-bootstrap.sh
+
+ Esperado: "[NEXLOG] nftables activo: 2 cadenas con policy drop"
+           "[NEXLOG] Bootstrap completado correctamente"
+
+
+--------------------------------------------------------------------------
+ 2) ACC-01  y  ACC-02  (consola GNS3 de cada uno, mismo comando)
+--------------------------------------------------------------------------
+/etc/network/nexlog-bootstrap.sh
+
+ Esperado: "[NEXLOG] Bootstrap ... completado"
+
+
+--------------------------------------------------------------------------
+ 3a) DIST-CORE-01 - WireGuard hacia el CD Secundario
+--------------------------------------------------------------------------
+sh /etc/network/wireguard/restore-wg0.sh; wg show | grep -E "interface|handshake"
+
+--------------------------------------------------------------------------
+ 3b) GW-CDS-01 - WireGuard hacia el CD Principal
+--------------------------------------------------------------------------
+sh /etc/network/wireguard/restore-wg0.sh; wg show wg0 | grep -E "interface|handshake"
+
+ Esperado (en ambos): "interface: wg0" y un "latest handshake" reciente.
+ Si no aparece el handshake, esperar 25 s y repetir: wg show
+
+
+--------------------------------------------------------------------------
+ 4) GW-CDS-01 - Tunel hacia Azure (OMITIR: VM de Azure no desplegadas por
+    falta de capacidad B-series en brazilsouth, 2026-11-03)
+--------------------------------------------------------------------------
+sh /etc/network/wireguard/restore-wg1.sh; wg show wg1 | grep -E "interface|endpoint|handshake"
+
+
+--------------------------------------------------------------------------
+ 5) ANSIBLE-V1-TEST  (consola GNS3)
+--------------------------------------------------------------------------
+cd /root/nexlog-hybrid-infrastructure; git pull --ff-only origin main; ansible -i ansible/inventory.ini all -m ping --private-key /root/.ssh/id_ed25519
+
+ Esperado: 3 x SUCCESS (DIST-CORE-01, ACC-01, ACC-02)
+ Si falla uno: volver a ejecutar su bootstrap (paso 1 o 2).
+
+for pb in configure_distribution configure_access; do ansible-playbook -i ansible/inventory.ini ansible/playbooks/$pb.yml --private-key /root/.ssh/id_ed25519 2>&1 | grep -E "^(PLAY \[|changed|fatal|failed)|: ok=|ABORT"; done
+
+ Esperado: failed=0 en los 3 equipos.
+ Tras un arranque en frio es NORMAL ver changed>0 (Ansible restaura la red).
+ Si se ejecuta una segunda vez: changed=0 (idempotencia).
+
+
+--------------------------------------------------------------------------
+ 6) VERIFICACION RAPIDA (30 segundos)
+--------------------------------------------------------------------------
+ PC-ADMIN:
+ping 10.10.30.10 -c 2
+ -> 2/2 (WMS OK)
+
+ping 192.168.99.11 -c 2
+ -> timeout (gestion bloqueada, correcto)
+
+ PC-CDS-01:
+ping 10.10.30.10 -c 2
+ -> 2/2 por la VPN
+
+ GW-CDS-01 (curl se pierde en arranque en frio; se reinstala si falta):
+command -v curl >/dev/null || apk add -q curl; curl -s -o /dev/null -w 'HTTP %{http_code}\n' --interface 10.20.20.1 http://10.10.30.10/nexlog-prueba.html
+ -> HTTP 200
+
+
+==========================================================================
+ POWERSHELL (Windows) - preparar cada sesion nueva
+==========================================================================
+ Ayudantes de evidencias (Save-Ev, Save-Ev2, Save-EvR, Fix-Txt):
+Set-ExecutionPolicy -Scope Process Bypass -Force; . "$HOME\NexLog\Evidencias_Final\00_Catalogo\helpers.ps1"
+
+ Azure / Terraform (variables de entorno, no quedan en archivos):
+$env:ARM_SUBSCRIPTION_ID = (az account show --query id -o tsv); $env:TF_VAR_wg_allowed_source = "$(Invoke-RestMethod https://api.ipify.org)/32"; $env:TF_VAR_admin_ssh_public_key_path = "$HOME\.ssh\nexlog_az.pub"
+
+ Clave publica WG de GW-CDS-01 para Azure (pegar la de "wg pubkey"):
+$env:TF_VAR_cds_wg_public_key = "PEGA_AQUI"
+
+ Si "az account show" falla: az login
+
+
+==========================================================================
+ PROTOCOLO DE CAPTURA (recordatorio)
+==========================================================================
+ PuTTY:   Clear Scrollback -> comando -> pegar Save-Ev2 SIN Enter ->
+          Win+ImprPant -> clic derecho en la BARRA DE TITULO -> Copy All -> Enter
+ VMware (AlmaLinux): Terminal > Restablecer y limpiar -> comando ->
+          Editar > Seleccionar todo -> Ctrl+Shift+C -> Save-Ev2
+ PowerShell: guardar salida en $r -> Win+ImprPant -> Save-EvR
+ NUNCA clic derecho DENTRO de PuTTY (pega y ejecuta el portapapeles).
+
+
+==========================================================================
+ APAGADO SEGURO (al terminar)
+==========================================================================
+ 1) Respaldo de evidencias (PowerShell, con Excel cerrado):
+Compress-Archive -Path "$HOME\NexLog\Evidencias_Final", "$HOME\NexLog\secure-backups" -DestinationPath "$HOME\NexLog\Respaldo_NexLog_$(Get-Date -Format yyyyMMdd).zip" -Force
+ 2) Subir el zip a Drive / office.com.
+ 3) (Opcional, ahorra credito) Detener VMs de Azure sin borrarlas:
+az vm deallocate -g rg-nexlog-capstone-dev -n vm-nexlog-app-az --no-wait; az vm deallocate -g rg-nexlog-capstone-dev -n vm-nexlog-gw-az --no-wait
+ Para volver a encenderlas:
+az vm start -g rg-nexlog-capstone-dev -n vm-nexlog-gw-az; az vm start -g rg-nexlog-capstone-dev -n vm-nexlog-app-az
+ 4) GNS3: Stop all nodes -> cerrar GNS3 -> apagar VMware.
