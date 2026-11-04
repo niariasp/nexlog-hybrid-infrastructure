@@ -1,6 +1,6 @@
 ==========================================================================
  NEXLOG CHILE - RECUPERACION DEL LABORATORIO (paso a paso)
- Actualizado: 2026-11-03 (arranque en frio validado)
+ Actualizado: 2026-11-03 (arranque en frio validado; Azure sin computo)
  Uso: copiar y pegar cada bloque en la consola indicada, EN ESTE ORDEN.
 ==========================================================================
 
@@ -8,9 +8,13 @@ ORDEN Y POR QUE
  1) DIST-CORE-01 bootstrap  -> carga nftables ANTES que el ruteo (sin fail-open)
  2) ACC-01 y ACC-02 bootstrap -> SSH para que Ansible pueda entrar
  3) WireGuard (DIST y GW-CDS-01) -> tunel Site 1 <-> Site 2
- 4) (Opcional) wg1 en GW-CDS-01 -> tunel Site 2 <-> Azure
- 5) Ansible (controlador) -> gateways, trunks, OpenFlow, limpieza de puertos
- 6) Verificacion rapida
+ 4) Ansible (controlador) -> gateways, trunks, OpenFlow, limpieza de puertos
+ 5) Verificacion rapida
+
+ESTADO AZURE: solo Storage (respaldos), VNet, subredes, NSG y tabla de rutas.
+ Las VM (GW-AZ / APP-AZ) NO estan desplegadas (SkuNotAvailable en Brazil
+ South, 2026-11-03), por lo que no hay tunel wg1 hacia Azure ni VMs que
+ encender o apagar.
 
 Antes de empezar:
  - GNS3: abrir el proyecto y "Start all nodes" (boton verde). Anotar la hora.
@@ -50,14 +54,7 @@ sh /etc/network/wireguard/restore-wg0.sh; wg show wg0 | grep -E "interface|hands
 
 
 --------------------------------------------------------------------------
- 4) GW-CDS-01 - Tunel hacia Azure (OMITIR: VM de Azure no desplegadas por
-    falta de capacidad B-series en brazilsouth, 2026-11-03)
---------------------------------------------------------------------------
-sh /etc/network/wireguard/restore-wg1.sh; wg show wg1 | grep -E "interface|endpoint|handshake"
-
-
---------------------------------------------------------------------------
- 5) ANSIBLE-V1-TEST  (consola GNS3)
+ 4) ANSIBLE-V1-TEST  (consola GNS3)
 --------------------------------------------------------------------------
 cd /root/nexlog-hybrid-infrastructure; git pull --ff-only origin main; ansible -i ansible/inventory.ini all -m ping --private-key /root/.ssh/id_ed25519
 
@@ -72,7 +69,7 @@ for pb in configure_distribution configure_access; do ansible-playbook -i ansibl
 
 
 --------------------------------------------------------------------------
- 6) VERIFICACION RAPIDA (30 segundos)
+ 5) VERIFICACION RAPIDA (30 segundos)
 --------------------------------------------------------------------------
  PC-ADMIN:
 ping 10.10.30.10 -c 2
@@ -96,13 +93,14 @@ command -v curl >/dev/null || apk add -q curl; curl -s -o /dev/null -w 'HTTP %{h
  Ayudantes de evidencias (Save-Ev, Save-Ev2, Save-EvR, Fix-Txt):
 Set-ExecutionPolicy -Scope Process Bypass -Force; . "$HOME\NexLog\Evidencias_Final\00_Catalogo\helpers.ps1"
 
- Azure / Terraform (variables de entorno, no quedan en archivos):
-$env:ARM_SUBSCRIPTION_ID = (az account show --query id -o tsv); $env:TF_VAR_wg_allowed_source = "$(Invoke-RestMethod https://api.ipify.org)/32"; $env:TF_VAR_admin_ssh_public_key_path = "$HOME\.ssh\nexlog_az.pub"
-
- Clave publica WG de GW-CDS-01 para Azure (pegar la de "wg pubkey"):
-$env:TF_VAR_cds_wg_public_key = "PEGA_AQUI"
+ Azure / Terraform (solo si vas a ejecutar terraform plan en azure o
+ azure-network; variables de entorno, no quedan en archivos):
+$env:ARM_SUBSCRIPTION_ID = (az account show --query id -o tsv); $env:TF_VAR_wg_allowed_source = "$(Invoke-RestMethod https://api.ipify.org)/32"
 
  Si "az account show" falla: az login
+ OJO: si tu IP publica cambio, terraform plan en azure-network mostrara 1
+ cambio en la regla Allow-WireGuard-From-Lab. Es esperado (no aplicar si no
+ hace falta).
 
 
 ==========================================================================
@@ -122,8 +120,8 @@ $env:TF_VAR_cds_wg_public_key = "PEGA_AQUI"
  1) Respaldo de evidencias (PowerShell, con Excel cerrado):
 Compress-Archive -Path "$HOME\NexLog\Evidencias_Final", "$HOME\NexLog\secure-backups" -DestinationPath "$HOME\NexLog\Respaldo_NexLog_$(Get-Date -Format yyyyMMdd).zip" -Force
  2) Subir el zip a Drive / office.com.
- 3) (Opcional, ahorra credito) Detener VMs de Azure sin borrarlas:
-az vm deallocate -g rg-nexlog-capstone-dev -n vm-nexlog-app-az --no-wait; az vm deallocate -g rg-nexlog-capstone-dev -n vm-nexlog-gw-az --no-wait
- Para volver a encenderlas:
-az vm start -g rg-nexlog-capstone-dev -n vm-nexlog-gw-az; az vm start -g rg-nexlog-capstone-dev -n vm-nexlog-app-az
- 4) GNS3: Stop all nodes -> cerrar GNS3 -> apagar VMware.
+ 3) Azure: nada que apagar (Storage, VNet, NSG y tabla de rutas no cobran
+    por estar encendidos; el Storage cobra centavos por lo almacenado).
+ 4) Si hiciste la prueba de QoS: en DIST "sh /etc/network/qos-wg0.sh off"
+    (igual se pierde al reiniciar el nodo).
+ 5) GNS3: Stop all nodes -> cerrar GNS3 -> apagar VMware.
