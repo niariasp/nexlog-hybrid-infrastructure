@@ -20,6 +20,11 @@ Antes de empezar:
  - GNS3: abrir el proyecto y "Start all nodes" (boton verde). Anotar la hora.
  - VMware: encender la VM SRV-WMS-01 (AlmaLinux). httpd arranca solo.
  - FortiGate y PCs VPCS: no necesitan nada (guardan su configuracion).
+ - Windows (hallazgo 8): tu PC NO debe tener IP en la VLAN 30. Verificar
+   (debe decir False):
+Get-NetAdapterBinding -Name "VMware Network Adapter VMnet2" -ComponentID ms_tcpip | Select-Object Name, Enabled
+   Si dice True (p. ej. tras actualizar VMware), en PowerShell ADMIN:
+Disable-NetAdapterBinding -Name "VMware Network Adapter VMnet2" -ComponentID ms_tcpip
 
 
 --------------------------------------------------------------------------
