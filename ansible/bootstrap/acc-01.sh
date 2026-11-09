@@ -21,7 +21,7 @@ fi
 if ! command -v python3 >/dev/null 2>&1 || \
    ! command -v sshd >/dev/null 2>&1; then
     echo "[NEXLOG] Instalando Python y OpenSSH..."
-    apk add --no-cache python3 openssh-server
+    { apk add --no-network --allow-untrusted /etc/network/apk-cache/*.apk >/dev/null 2>&1 && echo "[NEXLOG] Paquetes instalados desde cache local (sin Internet)"; } || apk add --no-cache python3 openssh-server
 fi
 
 # Restaurar identidad SSH

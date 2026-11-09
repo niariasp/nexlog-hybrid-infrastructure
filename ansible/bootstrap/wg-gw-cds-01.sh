@@ -5,7 +5,7 @@ echo "[NEXLOG] Restaurando WireGuard GW-CDS-01"
 
 # Instalar herramientas si es necesario
 if ! command -v wg >/dev/null 2>&1; then
-    apk add --no-cache iproute2 wireguard-tools
+    { apk add --no-network --allow-untrusted /etc/network/apk-cache/*.apk >/dev/null 2>&1 && echo "[NEXLOG] Paquetes instalados desde cache local (sin Internet)"; } || apk add --no-cache iproute2 wireguard-tools
 fi
 
 # Recuperar clave privada en ruta compatible

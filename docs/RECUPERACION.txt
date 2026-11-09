@@ -33,6 +33,8 @@ Disable-NetAdapterBinding -Name "VMware Network Adapter VMnet2" -ComponentID ms_
 /etc/network/nexlog-bootstrap.sh
 
  Esperado: "[NEXLOG] nftables activo: 2 cadenas con policy drop"
+ Sin Internet (arranque en frio): "[NEXLOG] Paquetes instalados desde
+ cache local (sin Internet)" -> ver NexLog_Modo_sin_Internet.txt
            "[NEXLOG] Bootstrap completado correctamente"
 
 
@@ -63,6 +65,7 @@ sh /etc/network/wireguard/restore-wg0.sh; wg show wg0 | grep -E "interface|hands
 --------------------------------------------------------------------------
 cd /root/nexlog-hybrid-infrastructure; git pull --ff-only origin main; ansible -i ansible/inventory.ini all -m ping --private-key /root/.ssh/id_ed25519
 
+ Sin Internet el "git pull" falla: es normal, se usa la copia local.
  Esperado: 3 x SUCCESS (DIST-CORE-01, ACC-01, ACC-02)
  Si falla uno: volver a ejecutar su bootstrap (paso 1 o 2).
 
@@ -88,7 +91,7 @@ ping 10.10.30.10 -c 2
  -> 2/2 por la VPN
 
  GW-CDS-01 (curl se pierde en arranque en frio; se reinstala si falta):
-command -v curl >/dev/null || apk add -q curl; curl -s -o /dev/null -w 'HTTP %{http_code}\n' --interface 10.20.20.1 http://10.10.30.10/nexlog-prueba.html
+command -v curl >/dev/null || apk add -q --no-network --allow-untrusted /etc/network/apk-cache/*.apk 2>/dev/null || apk add -q curl; curl -s -o /dev/null -w 'HTTP %{http_code}\n' --interface 10.20.20.1 http://10.10.30.10/nexlog-prueba.html
  -> HTTP 200
 
 

@@ -21,7 +21,7 @@ fi
 if ! command -v python3 >/dev/null 2>&1 || \
    ! command -v sshd >/dev/null 2>&1; then
     echo "[NEXLOG] Instalando Python y OpenSSH..."
-    apk add --no-cache python3 openssh-server
+    { apk add --no-network --allow-untrusted /etc/network/apk-cache/*.apk >/dev/null 2>&1 && echo "[NEXLOG] Paquetes instalados desde cache local (sin Internet)"; } || apk add --no-cache python3 openssh-server
 fi
 
 # 4. Restaurar identidad SSH original
@@ -45,7 +45,7 @@ fi
 #    Se carga ANTES de que Ansible restaure gateways y OpenFlow: evita ventana fail-open.
 echo "[NEXLOG] Cargando politica nftables..."
 if ! command -v nft >/dev/null 2>&1; then
-    apk add --no-cache nftables
+    { apk add --no-network --allow-untrusted /etc/network/apk-cache/*.apk >/dev/null 2>&1 && echo "[NEXLOG] Paquetes instalados desde cache local (sin Internet)"; } || apk add --no-cache nftables
 fi
 nft -f /etc/network/nftables-nexlog.nft
 echo "[NEXLOG] nftables activo: $(nft list ruleset | grep -c 'policy drop') cadenas con policy drop"
